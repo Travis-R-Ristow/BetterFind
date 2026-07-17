@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Better Find — Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="header">
+        <img class="logo" src="icons/icon48.png" alt="" />
+        <div>
+          <h1>Better Find</h1>
+          <p class="subtitle">A professional replacement for Ctrl+F.</p>
+        </div>
+      </header>
+
+      <section class="card">
+        <h2>Shortcut</h2>
+        <div class="row">
+          <label for="hotkey">Open Better Find</label>
+          <div class="hotkey-wrap">
+            <button id="hotkey" class="hotkey" type="button">Press a shortcut…</button>
+            <button id="hotkey-clear" class="ghost" type="button">Clear</button>
+          </div>
+        </div>
+        <p class="hint">
+          Click the field, then press your combination (e.g. Ctrl + Shift + F). Cannot override
+          find on <code>chrome://</code> pages, the PDF viewer, or the Chrome Web Store.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Highlight colors</h2>
+        <div class="row">
+          <label>All matches</label>
+          <div class="swatch-group">
+            <span class="swatch-label">Background</span>
+            <input type="color" id="colorAllBg" />
+            <span class="swatch-label">Text</span>
+            <input type="color" id="colorAllText" />
+          </div>
+        </div>
+        <div class="row">
+          <label>Active match</label>
+          <div class="swatch-group">
+            <span class="swatch-label">Background</span>
+            <input type="color" id="colorCurrentBg" />
+            <span class="swatch-label">Text</span>
+            <input type="color" id="colorCurrentText" />
+          </div>
+        </div>
+        <div class="preview" id="preview">
+          <span id="preview-all">highlighted match</span> and the
+          <span id="preview-current">active match</span> in context.
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Appearance</h2>
+        <div class="row">
+          <label for="theme">Theme</label>
+          <select id="theme">
+            <option value="auto">Match system</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="position">Bar position</label>
+          <select id="position">
+            <option value="top-right">Top right</option>
+            <option value="top-left">Top left</option>
+            <option value="bottom-right">Bottom right</option>
+            <option value="bottom-left">Bottom left</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Default search options</h2>
+        <label class="check"><input type="checkbox" id="defaultCaseSensitive" /> Match case</label>
+        <label class="check"><input type="checkbox" id="defaultWholeWord" /> Whole word</label>
+        <label class="check"><input type="checkbox" id="defaultRegex" /> Regular expression</label>
+        <label class="check"><input type="checkbox" id="defaultHidden" /> Include hidden content</label>
+      </section>
+
+      <footer class="footer">
+        <button id="reset" class="ghost" type="button">Reset to defaults</button>
+        <span id="status" class="status"></span>
+      </footer>
+    </main>
+
+    <script src="defaults.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>
