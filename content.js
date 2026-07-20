@@ -5,6 +5,22 @@
   window.__betterFindLoaded = true;
 
   const API = window.BetterFind;
+
+  function extensionAlive() {
+    return Boolean(chrome.runtime && chrome.runtime.id);
+  }
+
+  function openOptions() {
+    if (!extensionAlive()) {
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage({ type: "better-find:open-options" });
+    } catch (e) {
+      /* extension was reloaded; context is gone until the page reloads */
+    }
+  }
+
   const SUPPORTS_HIGHLIGHT =
     typeof CSS !== "undefined" && CSS.highlights && typeof Highlight !== "undefined";
   const SEARCH_DEBOUNCE_MS = 120;
@@ -21,13 +37,24 @@
     progressEl: null,
     progressInner: null,
     styleEl: null,
+    ticksEl: null,
+    liveEl: null,
     toggleButtons: {},
     matches: [],
     anchors: [],
     current: -1,
-    options: { caseSensitive: false, wholeWord: false, regex: false, hidden: false },
+    options: {
+      caseSensitive: false,
+      wholeWord: false,
+      regex: false,
+      hidden: false,
+      diacritics: false,
+    },
     searchTimer: null,
     deep: { running: false, cancel: false, scroller: null, seen: null },
+    anim: { raf: null },
+    observer: null,
+    liveTimer: null,
   };
 
   const ICONS = {
@@ -61,12 +88,8 @@
     return el.getClientRects().length > 0;
   }
 
-  function collectTextNodes(includeHidden) {
-    if (!document.body) {
-      return [];
-    }
-    const showHidden = includeHidden || state.options.hidden;
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+  function makeTextFilter(showHidden) {
+    return {
       acceptNode(node) {
         if (!node.nodeValue || !node.nodeValue.trim()) {
           return NodeFilter.FILTER_REJECT;
@@ -79,7 +102,7 @@
         if (tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT" || tag === "TEXTAREA") {
           return NodeFilter.FILTER_REJECT;
         }
-        if (parent.closest(".better-find-bar")) {
+        if (parent.closest && parent.closest(".better-find-bar")) {
           return NodeFilter.FILTER_REJECT;
         }
         if (!showHidden && !isVisible(node)) {
@@ -87,13 +110,29 @@
         }
         return NodeFilter.FILTER_ACCEPT;
       },
-    });
+    };
+  }
 
-    const nodes = [];
+  function collectFromRoot(root, filter, nodes) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, filter);
     let node;
     while ((node = walker.nextNode())) {
       nodes.push(node);
     }
+    root.querySelectorAll("*").forEach((el) => {
+      if (el.shadowRoot) {
+        collectFromRoot(el.shadowRoot, filter, nodes);
+      }
+    });
+  }
+
+  function collectTextNodes(includeHidden) {
+    if (!document.body) {
+      return [];
+    }
+    const showHidden = includeHidden || state.options.hidden;
+    const nodes = [];
+    collectFromRoot(document.body, makeTextFilter(showHidden), nodes);
     return nodes;
   }
 
@@ -101,14 +140,62 @@
     return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
+  function stripDiacritics(text) {
+    return text.normalize("NFD").replace(/\p{Diacritic}/gu, "");
+  }
+
+  function foldValue(text) {
+    let folded = "";
+    const map = [];
+    for (let i = 0; i < text.length; i++) {
+      const parts = stripDiacritics(text[i]);
+      for (let j = 0; j < parts.length; j++) {
+        folded += parts[j];
+        map.push(i);
+      }
+    }
+    map.push(text.length);
+    return { folded, map };
+  }
+
   function buildRegex(query, literal) {
     const opts = state.options;
-    let pattern = opts.regex && !literal ? query : escapeRegex(query);
+    const source = opts.diacritics ? stripDiacritics(query) : query;
+    let pattern = opts.regex && !literal ? source : escapeRegex(source);
     if (opts.wholeWord && !literal) {
       pattern = `\\b${pattern}\\b`;
     }
     const flags = opts.caseSensitive ? "g" : "gi";
     return new RegExp(pattern, flags);
+  }
+
+  function forEachMatch(node, regex, cb) {
+    const text = node.nodeValue;
+    regex.lastIndex = 0;
+    if (state.options.diacritics) {
+      const { folded, map } = foldValue(text);
+      let match;
+      while ((match = regex.exec(folded)) !== null) {
+        if (match[0].length === 0) {
+          regex.lastIndex++;
+          continue;
+        }
+        const start = map[match.index];
+        const end = map[match.index + match[0].length];
+        if (end > start) {
+          cb(start, end - start);
+        }
+      }
+      return;
+    }
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      if (match[0].length === 0) {
+        regex.lastIndex++;
+        continue;
+      }
+      cb(match.index, match[0].length);
+    }
   }
 
   function rangeForMatch(node, index, length) {
@@ -130,9 +217,12 @@
     state.matches = [];
     state.anchors = [];
     state.current = -1;
+    renderTicks();
+    syncAnimation();
   }
 
-  function runSearch(query) {
+  function runSearch(query, opts) {
+    const options = opts || {};
     if (state.deep.running) {
       return;
     }
@@ -153,28 +243,26 @@
 
     const nodes = collectTextNodes();
     for (const node of nodes) {
-      const text = node.nodeValue;
-      regex.lastIndex = 0;
-      let match;
-      while ((match = regex.exec(text)) !== null) {
-        if (match[0].length === 0) {
-          regex.lastIndex++;
-          continue;
-        }
-        state.matches.push(rangeForMatch(node, match.index, match[0].length));
+      forEachMatch(node, regex, (index, length) => {
+        state.matches.push(rangeForMatch(node, index, length));
         state.anchors.push(null);
-      }
+      });
     }
 
-    state.current = state.matches.length ? 0 : -1;
+    let target = state.matches.length ? 0 : -1;
+    if (options.keepView && options.index > 0 && options.index < state.matches.length) {
+      target = options.index;
+    }
+    state.current = target;
     paintHighlights();
-    if (state.current >= 0) {
+    if (state.current >= 0 && !options.keepView) {
       scrollToCurrent();
     }
     updateCount();
   }
 
   function scheduleSearch(query) {
+    startObserver();
     if (state.searchTimer) {
       clearTimeout(state.searchTimer);
     }
@@ -182,23 +270,228 @@
   }
 
   function paintHighlights() {
-    if (!SUPPORTS_HIGHLIGHT) {
+    if (SUPPORTS_HIGHLIGHT) {
+      const all = new Highlight();
+      const current = new Highlight();
+      state.matches.forEach((range, i) => {
+        if (!isConnected(range)) {
+          return;
+        }
+        if (i === state.current) {
+          current.add(range);
+        } else {
+          all.add(range);
+        }
+      });
+      CSS.highlights.set("better-find-all", all);
+      CSS.highlights.set("better-find-current", current);
+    }
+    renderTicks();
+    syncAnimation();
+  }
+
+  const MAX_TICKS = 400;
+
+  function renderTicks() {
+    if (!state.ticksEl) {
       return;
     }
-    const all = new Highlight();
-    const current = new Highlight();
-    state.matches.forEach((range, i) => {
-      if (!isConnected(range)) {
-        return;
+    state.ticksEl.textContent = "";
+    const total = state.matches.length;
+    if (!total) {
+      state.ticksEl.style.display = "none";
+      return;
+    }
+    const docHeight = Math.max(document.documentElement.scrollHeight, 1);
+    const step = total > MAX_TICKS ? Math.ceil(total / MAX_TICKS) : 1;
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < total; i++) {
+      if (i % step !== 0 && i !== state.current) {
+        continue;
       }
-      if (i === state.current) {
-        current.add(range);
+      const range = state.matches[i];
+      if (!isConnected(range)) {
+        continue;
+      }
+      const rect = range.getBoundingClientRect();
+      if (rect.height === 0 && rect.width === 0) {
+        continue;
+      }
+      const ratio = Math.max(0, Math.min(1, (rect.top + window.scrollY) / docHeight));
+      const tick = document.createElement("div");
+      tick.className =
+        i === state.current ? "better-find-tick better-find-tick-current" : "better-find-tick";
+      tick.style.top = `${ratio * 100}%`;
+      tick.dataset.index = String(i);
+      frag.appendChild(tick);
+    }
+    state.ticksEl.appendChild(frag);
+    state.ticksEl.style.display = "block";
+  }
+
+  function jumpTo(i) {
+    if (i < 0 || i >= state.matches.length) {
+      return;
+    }
+    state.current = i;
+    paintHighlights();
+    scrollToCurrent(true);
+    updateCount();
+  }
+
+  function announce(text) {
+    if (state.liveEl) {
+      state.liveEl.textContent = text;
+    }
+  }
+
+  const ANIMATION_VARS = [
+    "--bf-all-bg",
+    "--bf-all-glow",
+    "--bf-current-bg",
+    "--bf-current-glow",
+  ];
+
+  function hexToHsl(hex) {
+    let value = (hex || "").replace("#", "");
+    if (value.length === 3) {
+      value = value
+        .split("")
+        .map((c) => c + c)
+        .join("");
+    }
+    const r = parseInt(value.slice(0, 2), 16) / 255;
+    const g = parseInt(value.slice(2, 4), 16) / 255;
+    const b = parseInt(value.slice(4, 6), 16) / 255;
+    if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) {
+      return { h: 45, s: 90, l: 60 };
+    }
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const delta = max - min;
+    const l = (max + min) / 2;
+    let h = 0;
+    let sat = 0;
+    if (delta !== 0) {
+      sat = delta / (1 - Math.abs(2 * l - 1));
+      if (max === r) {
+        h = ((g - b) / delta) % 6;
+      } else if (max === g) {
+        h = (b - r) / delta + 2;
       } else {
-        all.add(range);
+        h = (r - g) / delta + 4;
+      }
+      h *= 60;
+      if (h < 0) {
+        h += 360;
+      }
+    }
+    return { h: Math.round(h), s: Math.round(sat * 100), l: Math.round(l * 100) };
+  }
+
+  function clearAnimationOverrides() {
+    const style = document.documentElement.style;
+    ANIMATION_VARS.forEach((name) => style.removeProperty(name));
+  }
+
+  function stopAnimation() {
+    if (state.anim.raf) {
+      cancelAnimationFrame(state.anim.raf);
+      state.anim.raf = null;
+    }
+    clearAnimationOverrides();
+  }
+
+  function animationTargets() {
+    return state.settings.animationTarget === "all" ? ["all"] : ["current"];
+  }
+
+  function paintAnimationFrame(now) {
+    const s = state.settings;
+    const period = Math.max(200, s.animationSpeed * 1000);
+    const phase = (now % period) / period;
+    const wave = (1 - Math.cos(phase * 2 * Math.PI)) / 2;
+    const intensity = s.animationIntensity / 100;
+    const style = document.documentElement.style;
+
+    animationTargets().forEach((target) => {
+      const baseColor = target === "all" ? s.colorAllBg : s.colorCurrentBg;
+      const hsl = hexToHsl(baseColor);
+      if (s.animation === "pulse") {
+        const blur = intensity * 16 * wave;
+        style.setProperty(`--bf-${target}-glow`, `0 0 ${blur.toFixed(2)}px ${baseColor}`);
+      } else if (s.animation === "breathe") {
+        const l = Math.max(0, Math.min(100, hsl.l + (wave - 0.5) * 2 * intensity * 30));
+        style.setProperty(`--bf-${target}-bg`, `hsl(${hsl.h} ${hsl.s}% ${l}%)`);
+      } else if (s.animation === "rainbow") {
+        const hue = (hsl.h + phase * 360) % 360;
+        const sat = Math.max(hsl.s, Math.round(intensity * 100));
+        style.setProperty(`--bf-${target}-bg`, `hsl(${hue} ${sat}% ${hsl.l}%)`);
       }
     });
-    CSS.highlights.set("better-find-all", all);
-    CSS.highlights.set("better-find-current", current);
+
+    state.anim.raf = requestAnimationFrame(paintAnimationFrame);
+  }
+
+  function syncAnimation() {
+    const s = state.settings;
+    const active =
+      SUPPORTS_HIGHLIGHT &&
+      state.bar &&
+      state.bar.style.display !== "none" &&
+      state.matches.length > 0 &&
+      !state.deep.running &&
+      s.animation &&
+      s.animation !== "none";
+    if (active) {
+      if (!state.anim.raf) {
+        state.anim.raf = requestAnimationFrame(paintAnimationFrame);
+      }
+    } else {
+      stopAnimation();
+    }
+  }
+
+  const LIVE_UPDATE_DEBOUNCE_MS = 300;
+
+  function reSearchLive() {
+    if (state.deep.running || !state.input || !state.input.value) {
+      return;
+    }
+    const previous = state.current;
+    if (state.observer) {
+      state.observer.disconnect();
+    }
+    runSearch(state.input.value, { keepView: true, index: previous });
+    if (state.observer) {
+      state.observer.observe(document.body, { childList: true, characterData: true, subtree: true });
+    }
+  }
+
+  function onMutations() {
+    if (state.liveTimer) {
+      clearTimeout(state.liveTimer);
+    }
+    state.liveTimer = setTimeout(reSearchLive, LIVE_UPDATE_DEBOUNCE_MS);
+  }
+
+  function startObserver() {
+    if (state.observer || !state.settings.liveUpdate || !document.body) {
+      return;
+    }
+    state.observer = new MutationObserver(onMutations);
+    state.observer.observe(document.body, { childList: true, characterData: true, subtree: true });
+  }
+
+  function stopObserver() {
+    if (state.observer) {
+      state.observer.disconnect();
+      state.observer = null;
+    }
+    if (state.liveTimer) {
+      clearTimeout(state.liveTimer);
+      state.liveTimer = null;
+    }
   }
 
   function isHidden(el) {
@@ -209,11 +502,53 @@
     return style.display === "none" || style.visibility === "hidden";
   }
 
-  function revealAncestors(node) {
+  function withFocusGuard(fn) {
+    const input = state.input;
+    const guard = input && document.activeElement === input;
+    const start = guard ? input.selectionStart : null;
+    const end = guard ? input.selectionEnd : null;
+    fn();
+    if (guard && document.activeElement !== input) {
+      input.focus();
+      if (start !== null) {
+        input.setSelectionRange(start, end);
+      }
+    }
+  }
+
+  function reopenControllingToggles(el) {
+    if (!el.id) {
+      return;
+    }
+    document
+      .querySelectorAll(`[aria-controls~="${CSS.escape(el.id)}"][aria-expanded="false"]`)
+      .forEach((toggle) => {
+        if (toggle.closest(".better-find-bar") || !isExpandableToggle(toggle)) {
+          return;
+        }
+        try {
+          toggle.click();
+        } catch (e) {
+          /* ignore toggles that throw */
+        }
+      });
+  }
+
+  function revealAncestors(node, interactive) {
     let el = node.parentElement;
     while (el && el !== document.documentElement) {
       if (el.tagName === "DETAILS" && !el.open) {
         el.open = true;
+      }
+      if (interactive) {
+        if (el.getAttribute("aria-expanded") === "false" && isExpandableToggle(el)) {
+          try {
+            el.click();
+          } catch (e) {
+            /* ignore toggles that throw */
+          }
+        }
+        reopenControllingToggles(el);
       }
       if (isHidden(el)) {
         el.setAttribute("data-bf-reveal", "");
@@ -228,8 +563,12 @@
     });
   }
 
-  function scrollRangeIntoView(range) {
-    revealAncestors(range.startContainer);
+  function scrollRangeIntoView(range, interactive) {
+    if (interactive) {
+      withFocusGuard(() => revealAncestors(range.startContainer, true));
+    } else {
+      revealAncestors(range.startContainer, false);
+    }
     const rect = range.getBoundingClientRect();
     const outOfView = rect.top < 0 || rect.bottom > window.innerHeight || rect.height === 0;
     if (outOfView) {
@@ -240,7 +579,7 @@
     }
   }
 
-  function scrollToCurrent() {
+  function scrollToCurrent(interactive) {
     const range = state.matches[state.current];
     if (!range) {
       return;
@@ -249,7 +588,7 @@
       relocateCurrent();
       return;
     }
-    scrollRangeIntoView(range);
+    scrollRangeIntoView(range, interactive);
   }
 
   async function relocateCurrent() {
@@ -262,34 +601,27 @@
     scroller.scrollTo({ top: anchor.ratio * scroller.scrollHeight });
     await settle(DEEP_SETTLE_MS);
 
-    const flags = state.options.caseSensitive ? "g" : "gi";
-    const re = new RegExp(escapeRegex(anchor.text), flags);
+    const re = buildRegex(anchor.text, true);
     const centerY = window.innerHeight / 2;
     let chosen = null;
     let chosenDist = Infinity;
 
     for (const node of collectTextNodes(true)) {
-      re.lastIndex = 0;
-      let m;
-      while ((m = re.exec(node.nodeValue)) !== null) {
-        if (m[0].length === 0) {
-          re.lastIndex++;
-          continue;
-        }
-        const r = rangeForMatch(node, m.index, m[0].length);
+      forEachMatch(node, re, (index, length) => {
+        const r = rangeForMatch(node, index, length);
         const rect = r.getBoundingClientRect();
         const dist = Math.abs((rect.top + rect.bottom) / 2 - centerY);
         if (dist < chosenDist) {
           chosenDist = dist;
           chosen = r;
         }
-      }
+      });
     }
 
     if (chosen) {
       state.matches[i] = chosen;
       paintHighlights();
-      scrollRangeIntoView(chosen);
+      scrollRangeIntoView(chosen, true);
     }
   }
 
@@ -302,14 +634,17 @@
       if (state.input.value) {
         state.countEl.textContent = "0 · ⇧⏎ scan";
         state.countEl.classList.add("better-find-none");
+        announce("No results");
       } else {
         state.countEl.textContent = "";
         state.countEl.classList.remove("better-find-none");
+        announce("");
       }
       return;
     }
     state.countEl.classList.remove("better-find-none");
     state.countEl.textContent = `${state.current + 1} / ${total}`;
+    announce(`Match ${state.current + 1} of ${total}`);
   }
 
   function move(delta) {
@@ -318,7 +653,7 @@
     }
     state.current = (state.current + delta + state.matches.length) % state.matches.length;
     paintHighlights();
-    scrollToCurrent();
+    scrollToCurrent(true);
     updateCount();
   }
 
@@ -413,22 +748,17 @@
     const ratio = scroller.scrollHeight ? scroller.scrollTop / scroller.scrollHeight : 0;
     for (const node of collectTextNodes(true)) {
       const text = node.nodeValue;
-      regex.lastIndex = 0;
-      let match;
-      while ((match = regex.exec(text)) !== null) {
-        if (match[0].length === 0) {
-          regex.lastIndex++;
-          continue;
-        }
-        const context = text.slice(Math.max(0, match.index - 15), match.index + match[0].length + 15);
-        const key = `${anchorPath(node)}::${match[0]}::${context}`;
+      forEachMatch(node, regex, (index, length) => {
+        const matchText = text.slice(index, index + length);
+        const context = text.slice(Math.max(0, index - 15), index + length + 15);
+        const key = `${anchorPath(node)}::${matchText}::${context}`;
         if (state.deep.seen.has(key)) {
-          continue;
+          return;
         }
         state.deep.seen.add(key);
-        state.matches.push(rangeForMatch(node, match.index, match[0].length));
-        state.anchors.push({ ratio, text: match[0] });
-      }
+        state.matches.push(rangeForMatch(node, index, length));
+        state.anchors.push({ ratio, text: matchText });
+      });
     }
   }
 
@@ -455,6 +785,7 @@
     }
 
     clearHighlights();
+    stopObserver();
     state.deep.running = true;
     state.deep.cancel = false;
     state.deep.seen = new Set();
@@ -514,7 +845,7 @@
     state.current = state.matches.length ? 0 : -1;
     paintHighlights();
     if (state.current >= 0) {
-      scrollToCurrent();
+      scrollToCurrent(true);
     }
     updateCount();
   }
@@ -555,9 +886,18 @@
     }
     const s = state.settings;
     state.styleEl.textContent = `
-::highlight(better-find-all){background-color:${s.colorAllBg};color:${s.colorAllText};}
-::highlight(better-find-current){background-color:${s.colorCurrentBg};color:${s.colorCurrentText};}
-[data-bf-reveal]{display:revert !important;visibility:visible !important;opacity:1 !important;}`;
+:root{
+--bf-all-bg:${s.colorAllBg};
+--bf-all-text:${s.colorAllText};
+--bf-all-glow:none;
+--bf-current-bg:${s.colorCurrentBg};
+--bf-current-text:${s.colorCurrentText};
+--bf-current-glow:none;
+}
+::highlight(better-find-all){background-color:var(--bf-all-bg,${s.colorAllBg});color:var(--bf-all-text,${s.colorAllText});text-shadow:var(--bf-all-glow,none);}
+::highlight(better-find-current){background-color:var(--bf-current-bg,${s.colorCurrentBg});color:var(--bf-current-text,${s.colorCurrentText});text-shadow:var(--bf-current-glow,none);}
+[data-bf-reveal]{display:revert !important;visibility:visible !important;opacity:1 !important;}
+${s.customCss || ""}`;
   }
 
   function applyTheme() {
@@ -586,6 +926,7 @@
     state.options.wholeWord = state.settings.defaultWholeWord;
     state.options.regex = state.settings.defaultRegex;
     state.options.hidden = state.settings.defaultHidden;
+    state.options.diacritics = state.settings.defaultIgnoreDiacritics;
     Object.keys(state.toggleButtons).forEach((key) => {
       state.toggleButtons[key].classList.toggle("better-find-active", state.options[key]);
     });
@@ -609,6 +950,7 @@
 
     const caseBtn = makeToggle("Aa", "Match case", "caseSensitive");
     const wordBtn = makeToggle("ab", "Whole word", "wholeWord");
+    const diacriticsBtn = makeToggle("á", "Ignore accents (café = cafe)", "diacritics");
     const regexBtn = makeToggle(".*", "Regular expression", "regex");
     const hiddenBtn = makeToggle(ICONS.eye, "Include hidden content", "hidden");
 
@@ -621,12 +963,7 @@
 
     const prevBtn = makeButton(ICONS.prev, "Previous (↑)", () => move(-1), true);
     const nextBtn = makeButton(ICONS.next, "Next (Enter / ↓)", () => move(1), true);
-    const settingsBtn = makeButton(
-      ICONS.gear,
-      "Settings",
-      () => chrome.runtime.sendMessage({ type: "better-find:open-options" }),
-      true
-    );
+    const settingsBtn = makeButton(ICONS.gear, "Settings", openOptions, true);
     const closeBtn = makeButton(ICONS.close, "Close (Esc)", close, true);
 
     input.addEventListener("input", () => scheduleSearch(input.value));
@@ -666,12 +1003,18 @@
     progressInner.className = "better-find-progress-inner";
     progress.appendChild(progressInner);
 
+    const live = document.createElement("div");
+    live.className = "better-find-live";
+    live.setAttribute("role", "status");
+    live.setAttribute("aria-live", "polite");
+
     bar.append(
       input,
       count,
       sep1,
       caseBtn,
       wordBtn,
+      diacriticsBtn,
       regexBtn,
       hiddenBtn,
       scanBtn,
@@ -680,15 +1023,30 @@
       nextBtn,
       settingsBtn,
       closeBtn,
-      progress
+      progress,
+      live
     );
+
+    const ticks = document.createElement("div");
+    ticks.className = "better-find-ticks";
+    ticks.style.display = "none";
+    ticks.addEventListener("mousedown", (e) => e.preventDefault());
+    ticks.addEventListener("click", (e) => {
+      const tick = e.target.closest(".better-find-tick");
+      if (tick && tick.dataset.index) {
+        jumpTo(Number(tick.dataset.index));
+      }
+    });
 
     state.bar = bar;
     state.input = input;
     state.countEl = count;
     state.progressEl = progress;
     state.progressInner = progressInner;
+    state.liveEl = live;
+    state.ticksEl = ticks;
     document.documentElement.appendChild(bar);
+    document.documentElement.appendChild(ticks);
     applyDynamicStyle();
     applyPosition();
     applyTheme();
@@ -710,10 +1068,13 @@
     if (state.input.value) {
       runSearch(state.input.value);
     }
+    startObserver();
   }
 
   function close() {
     cancelDeep();
+    stopAnimation();
+    stopObserver();
     clearHighlights();
     restoreRevealed();
     if (state.bar) {
@@ -727,7 +1088,7 @@
 
   function matchesHotkey(e) {
     const hk = state.settings.hotkey;
-    if (!hk || !hk.key) {
+    if (!hk || !hk.key || !e.key) {
       return false;
     }
     return (
@@ -756,6 +1117,17 @@
     true
   );
 
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    if (!state.matches.length) {
+      return;
+    }
+    if (resizeTimer) {
+      clearTimeout(resizeTimer);
+    }
+    resizeTimer = setTimeout(renderTicks, 120);
+  });
+
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg && msg.type === "better-find:open") {
       open();
@@ -763,17 +1135,30 @@
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "sync" || !changes[API.STORAGE_KEY]) {
+    if (area !== "sync" || !changes[API.STORAGE_KEY] || !extensionAlive()) {
       return;
     }
     state.settings = API.mergeSettings(changes[API.STORAGE_KEY].newValue);
+    stopAnimation();
     applyDynamicStyle();
     applyTheme();
     applyPosition();
+    syncAnimation();
+    stopObserver();
+    if (state.bar && state.bar.style.display !== "none") {
+      startObserver();
+    }
   });
 
-  chrome.storage.sync.get(API.STORAGE_KEY, (data) => {
-    state.settings = API.mergeSettings(data && data[API.STORAGE_KEY]);
-    applyDynamicStyle();
-  });
+  try {
+    chrome.storage.sync.get(API.STORAGE_KEY, (data) => {
+      if (chrome.runtime.lastError) {
+        return;
+      }
+      state.settings = API.mergeSettings(data && data[API.STORAGE_KEY]);
+      applyDynamicStyle();
+    });
+  } catch (e) {
+    /* extension context unavailable; keep defaults */
+  }
 })();

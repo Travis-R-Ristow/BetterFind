@@ -19,6 +19,13 @@
     defaultWholeWord: false,
     defaultRegex: false,
     defaultHidden: false,
+    defaultIgnoreDiacritics: false,
+    liveUpdate: false,
+    customCss: "",
+    animation: "none",
+    animationTarget: "current",
+    animationSpeed: 1.2,
+    animationIntensity: 60,
   };
 
   function formatHotkey(hk) {

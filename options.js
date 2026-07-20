@@ -11,6 +11,13 @@ const fields = {
   defaultWholeWord: document.getElementById("defaultWholeWord"),
   defaultRegex: document.getElementById("defaultRegex"),
   defaultHidden: document.getElementById("defaultHidden"),
+  defaultIgnoreDiacritics: document.getElementById("defaultIgnoreDiacritics"),
+  liveUpdate: document.getElementById("liveUpdate"),
+  customCss: document.getElementById("customCss"),
+  animation: document.getElementById("animation"),
+  animationTarget: document.getElementById("animationTarget"),
+  animationSpeed: document.getElementById("animationSpeed"),
+  animationIntensity: document.getElementById("animationIntensity"),
 };
 
 const hotkeyBtn = document.getElementById("hotkey");
@@ -35,8 +42,21 @@ function render() {
   fields.defaultWholeWord.checked = settings.defaultWholeWord;
   fields.defaultRegex.checked = settings.defaultRegex;
   fields.defaultHidden.checked = settings.defaultHidden;
+  fields.defaultIgnoreDiacritics.checked = settings.defaultIgnoreDiacritics;
+  fields.liveUpdate.checked = settings.liveUpdate;
+  fields.customCss.value = settings.customCss;
+  fields.animation.value = settings.animation;
+  fields.animationTarget.value = settings.animationTarget;
+  fields.animationSpeed.value = settings.animationSpeed;
+  fields.animationIntensity.value = settings.animationIntensity;
+  renderRangeValues();
   hotkeyBtn.textContent = API.formatHotkey(settings.hotkey);
   renderPreview();
+}
+
+function renderRangeValues() {
+  document.getElementById("animationSpeed-val").textContent = `${settings.animationSpeed}s`;
+  document.getElementById("animationIntensity-val").textContent = `${settings.animationIntensity}%`;
 }
 
 function renderPreview() {
@@ -61,7 +81,14 @@ function save() {
 
 function bindField(key, el, prop) {
   el.addEventListener("input", () => {
-    settings[key] = prop === "checked" ? el.checked : el.value;
+    if (prop === "checked") {
+      settings[key] = el.checked;
+    } else if (prop === "number") {
+      settings[key] = parseFloat(el.value);
+    } else {
+      settings[key] = el.value;
+    }
+    renderRangeValues();
     renderPreview();
     save();
   });
@@ -77,6 +104,13 @@ bindField("defaultCaseSensitive", fields.defaultCaseSensitive, "checked");
 bindField("defaultWholeWord", fields.defaultWholeWord, "checked");
 bindField("defaultRegex", fields.defaultRegex, "checked");
 bindField("defaultHidden", fields.defaultHidden, "checked");
+bindField("defaultIgnoreDiacritics", fields.defaultIgnoreDiacritics, "checked");
+bindField("liveUpdate", fields.liveUpdate, "checked");
+bindField("customCss", fields.customCss, "value");
+bindField("animation", fields.animation, "value");
+bindField("animationTarget", fields.animationTarget, "value");
+bindField("animationSpeed", fields.animationSpeed, "number");
+bindField("animationIntensity", fields.animationIntensity, "number");
 
 function stopRecording() {
   recording = false;

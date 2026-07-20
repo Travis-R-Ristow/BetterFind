@@ -186,3 +186,52 @@
 .better-find-bar.better-find-dark .better-find-sep {
   background: #3c4043;
 }
+
+.better-find-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.better-find-ticks {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 14px;
+  height: 100vh;
+  z-index: 2147483646;
+  pointer-events: none;
+}
+
+.better-find-tick {
+  position: absolute;
+  right: 2px;
+  width: 10px;
+  height: 2px;
+  margin-top: -1px;
+  border-radius: 1px;
+  background: #f0a020;
+  opacity: 0.75;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.better-find-tick:hover {
+  opacity: 1;
+}
+
+.better-find-tick-current {
+  width: 14px;
+  height: 3px;
+  right: 0;
+  background: #ff6a00;
+  opacity: 1;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6);
+}
