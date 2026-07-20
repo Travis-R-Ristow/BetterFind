@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Better Find",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A professional replacement for Ctrl+F. Searches the full DOM and highlights matches cleanly.",
   "icons": {
     "16": "icons/icon16.png",
