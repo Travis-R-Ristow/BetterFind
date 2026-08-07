@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Better Find — Settings</title>
+    <link rel="stylesheet" href="switch.css" />
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
@@ -15,6 +16,67 @@
           <p class="subtitle">A professional replacement for Ctrl+F.</p>
         </div>
       </header>
+
+      <section class="card">
+        <h2>Where it runs</h2>
+        <div class="row">
+          <label for="enabled">Better Find</label>
+          <div class="master-wrap">
+            <span class="master-state" id="master-state">On</span>
+            <label class="switch">
+              <input type="checkbox" id="enabled" />
+              <span class="track"></span>
+            </label>
+          </div>
+        </div>
+        <p class="hint">
+          Off is a hard off — no shortcut, no highlights, nothing injected on any page. The lists
+          below are ignored while it's off.
+        </p>
+
+        <div class="rule-group">
+          <div class="rule-head">
+            <h3>Always on</h3>
+            <button class="ghost small" type="button" data-add="alwaysOn">+ Add pattern</button>
+          </div>
+          <div class="rule-list" id="list-alwaysOn"></div>
+          <p class="rule-empty" id="empty-alwaysOn">No patterns yet.</p>
+        </div>
+
+        <div class="rule-group">
+          <div class="rule-head">
+            <h3>Always off</h3>
+            <button class="ghost small" type="button" data-add="alwaysOff">+ Add pattern</button>
+          </div>
+          <div class="rule-list" id="list-alwaysOff"></div>
+          <p class="rule-empty" id="empty-alwaysOff">No patterns yet.</p>
+        </div>
+
+        <div class="note">
+          <p><strong>Pattern syntax</strong></p>
+          <p>
+            <code>example.com</code> — whole site, any scheme, port, or path ·
+            <code>*.example.com</code> — subdomains ·
+            <code>example.com/docs/</code> — everything under a path ·
+            <code>https://example.com/docs/page</code> — that exact URL ·
+            <code>*</code> — wildcard anywhere
+          </p>
+          <p class="legend">
+            <span class="legend-dot is-conflict"></span> Same pattern in both lists — fix it.
+            <br />
+            <span class="legend-dot is-warn"></span> Patterns overlap. Always-on wins, so the
+            always-off entry never applies to the shared URLs.
+          </p>
+        </div>
+      </section>
+
+      <section class="card" id="overrides-card" hidden>
+        <h2>Per-site overrides</h2>
+        <p class="hint">
+          Set from the toolbar popup. These take priority over both lists above.
+        </p>
+        <div id="list-overrides"></div>
+      </section>
 
       <section class="card">
         <h2>Shortcut</h2>

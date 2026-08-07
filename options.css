@@ -323,3 +323,172 @@ input[type="color"] {
   color: var(--accent);
   text-decoration: underline;
 }
+
+.master-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.master-state {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.rule-group {
+  margin-top: 18px;
+}
+
+.rule-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.rule-head h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.ghost.small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.rule {
+  margin-bottom: 8px;
+}
+
+.rule-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rule-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.rule-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(26, 95, 208, 0.18);
+}
+
+.rule.is-conflict .rule-input {
+  border-color: #d93025;
+  background: rgba(217, 48, 37, 0.08);
+}
+
+.rule.is-warn .rule-input {
+  border-color: #d98324;
+  background: rgba(217, 131, 36, 0.1);
+}
+
+.rule-remove {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.rule-remove:hover {
+  border-color: #d93025;
+  color: #d93025;
+}
+
+.rule-issue {
+  margin: 5px 0 0 2px;
+  font-size: 11px;
+  display: none;
+}
+
+.rule.is-conflict .rule-issue,
+.rule.is-warn .rule-issue {
+  display: block;
+}
+
+.rule.is-conflict .rule-issue {
+  color: #d93025;
+}
+
+.rule.is-warn .rule-issue {
+  color: #b26a00;
+}
+
+.rule-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.legend {
+  display: block;
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 5px;
+  border-radius: 3px;
+  vertical-align: baseline;
+}
+
+.legend-dot.is-conflict {
+  background: #d93025;
+}
+
+.legend-dot.is-warn {
+  background: #d98324;
+}
+
+.override {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.override + .override {
+  border-top: 1px solid var(--border);
+}
+
+.override-host {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.override-state {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.status.is-error {
+  color: #d93025;
+}

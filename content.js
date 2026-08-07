@@ -25,12 +25,21 @@
     typeof CSS !== "undefined" && CSS.highlights && typeof Highlight !== "undefined";
   const SEARCH_DEBOUNCE_MS = 120;
   const DEEP_SETTLE_MS = 200;
+  const CUSTOM_SETTLE_MS = 80;
   const DEEP_MAX_ITERATIONS = 400;
-  const DEEP_MAX_MS = 30000;
+  const DEEP_MAX_MS = 45000;
   const DEEP_STABLE_LIMIT = 2;
+  const SCROLLER_MIN_HEIGHT = 120;
+  const SCROLLER_MIN_WIDTH = 200;
+  const SCROLLER_MIN_OVERFLOW = 40;
+  const MAX_SCROLLERS = 8;
+  const SIGNATURE_SAMPLE = 2;
+  const RELOCATE_HUNT_STEPS = 4;
 
   const state = {
     settings: API.DEFAULT_SETTINGS,
+    overrides: {},
+    loaded: false,
     bar: null,
     input: null,
     countEl: null,
@@ -51,7 +60,9 @@
       diacritics: false,
     },
     searchTimer: null,
-    deep: { running: false, cancel: false, scroller: null, seen: null },
+    deepResults: false,
+    relocating: false,
+    deep: { running: false, cancel: false, scroller: null, seen: null, deadline: 0 },
     anim: { raf: null },
     observer: null,
     liveTimer: null,
@@ -126,13 +137,14 @@
     });
   }
 
-  function collectTextNodes(includeHidden) {
-    if (!document.body) {
+  function collectTextNodes(includeHidden, root) {
+    const base = root || document.body;
+    if (!base) {
       return [];
     }
     const showHidden = includeHidden || state.options.hidden;
     const nodes = [];
-    collectFromRoot(document.body, makeTextFilter(showHidden), nodes);
+    collectFromRoot(base, makeTextFilter(showHidden), nodes);
     return nodes;
   }
 
@@ -223,9 +235,10 @@
 
   function runSearch(query, opts) {
     const options = opts || {};
-    if (state.deep.running) {
+    if (state.deep.running || !state.bar) {
       return;
     }
+    state.deepResults = false;
     clearHighlights();
     if (!query) {
       updateCount();
@@ -455,7 +468,7 @@
   const LIVE_UPDATE_DEBOUNCE_MS = 300;
 
   function reSearchLive() {
-    if (state.deep.running || !state.input || !state.input.value) {
+    if (state.deep.running || state.deepResults || !state.input || !state.input.value) {
       return;
     }
     const previous = state.current;
@@ -507,13 +520,14 @@
     const guard = input && document.activeElement === input;
     const start = guard ? input.selectionStart : null;
     const end = guard ? input.selectionEnd : null;
-    fn();
+    const result = fn();
     if (guard && document.activeElement !== input) {
       input.focus();
       if (start !== null) {
         input.setSelectionRange(start, end);
       }
     }
+    return result;
   }
 
   function reopenControllingToggles(el) {
@@ -563,6 +577,49 @@
     });
   }
 
+  function scrollableAncestor(node) {
+    let el = node.parentElement;
+    while (el) {
+      if (
+        el.scrollHeight > el.clientHeight + SCROLLER_MIN_OVERFLOW &&
+        el.clientHeight >= SCROLLER_MIN_HEIGHT &&
+        window.getComputedStyle(el).overflowY !== "visible"
+      ) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function isUsableRange(range, index) {
+    if (!isConnected(range)) {
+      return false;
+    }
+    const anchor = state.anchors[index];
+    if (!anchor || !anchor.text) {
+      return true;
+    }
+    return range.toString() === anchor.text;
+  }
+
+  function verifyAfterSeek(allowRelocate) {
+    setTimeout(() => {
+      const index = state.current;
+      const range = state.matches[index];
+      if (!range) {
+        return;
+      }
+      if (!isUsableRange(range, index)) {
+        if (allowRelocate) {
+          relocateCurrent();
+        }
+        return;
+      }
+      paintHighlights();
+    }, DEEP_SETTLE_MS);
+  }
+
   function scrollRangeIntoView(range, interactive) {
     if (interactive) {
       withFocusGuard(() => revealAncestors(range.startContainer, true));
@@ -570,7 +627,22 @@
       revealAncestors(range.startContainer, false);
     }
     const rect = range.getBoundingClientRect();
-    const outOfView = rect.top < 0 || rect.bottom > window.innerHeight || rect.height === 0;
+    const container = scrollableAncestor(range.startContainer);
+    const box = container ? container.getBoundingClientRect() : null;
+    const rendered = rect.height > 0 || rect.width > 0;
+
+    if (container && isCustomScroller(container) && rendered) {
+      const delta = rect.top + rect.height / 2 - (box.top + box.height / 2);
+      if (Math.abs(delta) > 8) {
+        dispatchWheel(container, delta);
+        verifyAfterSeek(!state.relocating);
+      }
+      return;
+    }
+
+    const clipped = box ? rect.bottom < box.top + 1 || rect.top > box.bottom - 1 : false;
+    const outOfView =
+      rect.top < 0 || rect.bottom > window.innerHeight || rect.height === 0 || clipped;
     if (outOfView) {
       const target = range.startContainer.parentElement;
       if (target && target.scrollIntoView) {
@@ -584,49 +656,81 @@
     if (!range) {
       return;
     }
-    if (!isConnected(range)) {
+    if (!isUsableRange(range, state.current)) {
       relocateCurrent();
       return;
     }
     scrollRangeIntoView(range, interactive);
   }
 
+  function seekCenter(scroller, isPage) {
+    if (isPage) {
+      return window.innerHeight / 2;
+    }
+    const box = scroller.getBoundingClientRect();
+    return box.top + box.height / 2;
+  }
+
+  function findNearestMatch(root, re, centerY) {
+    let chosen = null;
+    let chosenDist = Infinity;
+    for (const node of collectTextNodes(true, root)) {
+      forEachMatch(node, re, (index, length) => {
+        const range = rangeForMatch(node, index, length);
+        const rect = range.getBoundingClientRect();
+        const dist = Math.abs((rect.top + rect.bottom) / 2 - centerY);
+        if (dist < chosenDist) {
+          chosenDist = dist;
+          chosen = range;
+        }
+      });
+    }
+    return chosen;
+  }
+
   async function relocateCurrent() {
+    if (state.relocating) {
+      return;
+    }
     const i = state.current;
     const anchor = state.anchors[i];
     if (!anchor) {
       return;
     }
-    const scroller = state.deep.scroller || findScroller();
-    scroller.scrollTo({ top: anchor.ratio * scroller.scrollHeight });
-    await settle(DEEP_SETTLE_MS);
+    const scroller =
+      anchor.scroller && anchor.scroller.isConnected
+        ? anchor.scroller
+        : state.deep.scroller || findScroller();
+    state.relocating = true;
+    try {
+      await scrollToRatio(scroller, anchor.ratio);
 
-    const re = buildRegex(anchor.text, true);
-    const centerY = window.innerHeight / 2;
-    let chosen = null;
-    let chosenDist = Infinity;
+      const re = buildRegex(anchor.text, true);
+      const isPage = scroller === docScroller();
+      const root = isPage ? null : scroller;
 
-    for (const node of collectTextNodes(true)) {
-      forEachMatch(node, re, (index, length) => {
-        const r = rangeForMatch(node, index, length);
-        const rect = r.getBoundingClientRect();
-        const dist = Math.abs((rect.top + rect.bottom) / 2 - centerY);
-        if (dist < chosenDist) {
-          chosenDist = dist;
-          chosen = r;
+      let chosen = findNearestMatch(root, re, seekCenter(scroller, isPage));
+      if (!chosen && isCustomScroller(scroller)) {
+        const step = Math.max(200, scroller.clientHeight * 0.85);
+        for (let pass = 0; pass < RELOCATE_HUNT_STEPS && !chosen; pass++) {
+          dispatchWheel(scroller, step);
+          await settle(CUSTOM_SETTLE_MS);
+          chosen = findNearestMatch(root, re, seekCenter(scroller, isPage));
         }
-      });
-    }
+      }
 
-    if (chosen) {
-      state.matches[i] = chosen;
-      paintHighlights();
-      scrollRangeIntoView(chosen, true);
+      if (chosen) {
+        state.matches[i] = chosen;
+        paintHighlights();
+        scrollRangeIntoView(chosen, true);
+      }
+    } finally {
+      state.relocating = false;
     }
   }
 
   function updateCount() {
-    if (state.deep.running) {
+    if (state.deep.running || !state.countEl) {
       return;
     }
     const total = state.matches.length;
@@ -663,26 +767,125 @@
     });
   }
 
-  function findScroller() {
-    const doc = document.scrollingElement || document.documentElement;
-    if (doc && doc.scrollHeight > doc.clientHeight + 4) {
-      return doc;
+  function docScroller() {
+    return document.scrollingElement || document.documentElement;
+  }
+
+  function isCustomScroller(el) {
+    return el !== docScroller() && window.getComputedStyle(el).overflowY === "hidden";
+  }
+
+  function isScrollContainer(el) {
+    if (el.scrollHeight <= el.clientHeight + SCROLLER_MIN_OVERFLOW) {
+      return false;
     }
-    let best = doc;
-    let bestArea = 0;
+    if (el.clientHeight < SCROLLER_MIN_HEIGHT || el.clientWidth < SCROLLER_MIN_WIDTH) {
+      return false;
+    }
+    if (el.closest(".better-find-bar")) {
+      return false;
+    }
+    const overflow = window.getComputedStyle(el).overflowY;
+    return (
+      overflow === "auto" || overflow === "scroll" || overflow === "overlay" || overflow === "hidden"
+    );
+  }
+
+  function findScrollers() {
+    const found = [];
+    const doc = docScroller();
+    if (doc && doc.scrollHeight > doc.clientHeight + 4) {
+      found.push(doc);
+    }
     const els = document.body ? document.body.querySelectorAll("*") : [];
     for (const el of els) {
-      const style = window.getComputedStyle(el);
-      const oy = style.overflowY;
-      if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 20) {
-        const area = el.clientWidth * el.clientHeight;
-        if (area > bestArea) {
-          bestArea = area;
-          best = el;
-        }
+      if (isScrollContainer(el)) {
+        found.push(el);
       }
     }
-    return best;
+    found.sort((a, b) => b.clientWidth * b.clientHeight - a.clientWidth * a.clientHeight);
+    return found.slice(0, MAX_SCROLLERS);
+  }
+
+  function findScroller() {
+    return findScrollers()[0] || docScroller();
+  }
+
+  function dispatchWheel(el, deltaY) {
+    const rect = el.getBoundingClientRect();
+    el.dispatchEvent(
+      new WheelEvent("wheel", {
+        deltaY,
+        deltaMode: 0,
+        bubbles: true,
+        cancelable: true,
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2,
+      })
+    );
+  }
+
+  function contentSignature(el) {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    const first = [];
+    const last = [];
+    let count = 0;
+    let node;
+    while ((node = walker.nextNode())) {
+      const text = node.nodeValue.trim();
+      if (!text) {
+        continue;
+      }
+      count++;
+      if (first.length < SIGNATURE_SAMPLE) {
+        first.push(text.slice(0, 40));
+      }
+      last.push(text.slice(0, 40));
+      if (last.length > SIGNATURE_SAMPLE) {
+        last.shift();
+      }
+    }
+    return `${count}|${first.join("~")}|${last.join("~")}`;
+  }
+
+  function scrollRatio(el, travelled) {
+    if (!el.scrollHeight) {
+      return 0;
+    }
+    const top = el.scrollTop > 0 ? el.scrollTop : travelled;
+    return Math.min(1, top / el.scrollHeight);
+  }
+
+  function advanceScroller(el, step, mode) {
+    if (mode === "native") {
+      el.scrollTo({ top: el.scrollTop + step });
+      return;
+    }
+    dispatchWheel(el, step);
+  }
+
+  async function resetScroller(el, mode) {
+    if (mode === "native") {
+      el.scrollTo({ top: 0 });
+    } else {
+      el.scrollTop = 0;
+      dispatchWheel(el, -(el.scrollHeight + 2000));
+    }
+    await settle(CUSTOM_SETTLE_MS);
+  }
+
+  async function scrollToRatio(el, ratio) {
+    const target = ratio * el.scrollHeight;
+    if (isCustomScroller(el)) {
+      el.scrollTop = 0;
+      dispatchWheel(el, -(el.scrollHeight + 2000));
+      await settle(CUSTOM_SETTLE_MS);
+      dispatchWheel(el, target);
+      await settle(DEEP_SETTLE_MS);
+      return;
+    }
+    el.scrollTo({ top: target });
+    await settle(DEEP_SETTLE_MS);
   }
 
   function anchorPath(node) {
@@ -706,11 +909,17 @@
     if (el.tagName === "A") {
       return false;
     }
+    if (el.hasAttribute("aria-haspopup")) {
+      return false;
+    }
+    const role = (el.getAttribute("role") || "").toLowerCase();
+    if (role === "menuitem" || role === "combobox" || role === "tab") {
+      return false;
+    }
     const type = (el.getAttribute("type") || "").toLowerCase();
     if (type === "submit" || type === "reset") {
       return false;
     }
-    const role = (el.getAttribute("role") || "").toLowerCase();
     return el.tagName === "BUTTON" || role === "button" || el.hasAttribute("aria-controls");
   }
 
@@ -744,9 +953,8 @@
     return changed;
   }
 
-  function accumulate(regex, scroller) {
-    const ratio = scroller.scrollHeight ? scroller.scrollTop / scroller.scrollHeight : 0;
-    for (const node of collectTextNodes(true)) {
+  function accumulate(regex, scroller, ratio, root) {
+    for (const node of collectTextNodes(true, root)) {
       const text = node.nodeValue;
       forEachMatch(node, regex, (index, length) => {
         const matchText = text.slice(index, index + length);
@@ -757,12 +965,15 @@
         }
         state.deep.seen.add(key);
         state.matches.push(rangeForMatch(node, index, length));
-        state.anchors.push({ ratio, text: matchText });
+        state.anchors.push({ scroller, ratio, text: matchText });
       });
     }
   }
 
   function setProgress(pct) {
+    if (!state.countEl) {
+      return;
+    }
     const clamped = Math.max(0, Math.min(100, Math.round(pct)));
     state.countEl.textContent = `Scanning ${clamped}%`;
     state.countEl.classList.remove("better-find-none");
@@ -771,8 +982,102 @@
     }
   }
 
+  async function sweepNative(el, regex, root, report) {
+    const originalTop = el.scrollTop;
+    const step = Math.max(200, el.clientHeight * 0.85);
+    let iterations = 0;
+    let stable = 0;
+    let lastHeight = -1;
+
+    el.scrollTo({ top: 0 });
+    await settle(DEEP_SETTLE_MS);
+
+    while (!state.deep.cancel) {
+      if (withFocusGuard(expandCollapsibles)) {
+        await settle(DEEP_SETTLE_MS);
+      }
+      accumulate(regex, el, scrollRatio(el, 0), root);
+
+      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+      if (atBottom) {
+        if (el.scrollHeight === lastHeight) {
+          stable++;
+          if (stable >= DEEP_STABLE_LIMIT) {
+            break;
+          }
+        } else {
+          stable = 0;
+        }
+        lastHeight = el.scrollHeight;
+      }
+
+      el.scrollTo({ top: el.scrollTop + step });
+      await settle(DEEP_SETTLE_MS);
+      report(scrollRatio(el, 0));
+
+      iterations++;
+      if (iterations > DEEP_MAX_ITERATIONS || performance.now() > state.deep.deadline) {
+        break;
+      }
+    }
+
+    el.scrollTo({ top: originalTop });
+  }
+
+  async function sweepCustom(el, regex, root, report) {
+    const originalTop = el.scrollTop;
+    const step = Math.max(200, el.clientHeight * 0.85);
+    let mode = "wheel";
+    let escalated = false;
+    let travelled = 0;
+    let iterations = 0;
+    let stable = 0;
+    let signature = null;
+
+    await resetScroller(el, mode);
+
+    while (!state.deep.cancel) {
+      accumulate(regex, el, scrollRatio(el, travelled), root);
+
+      const current = `${el.scrollHeight}|${contentSignature(el)}`;
+      if (current === signature) {
+        stable++;
+        if (stable >= DEEP_STABLE_LIMIT) {
+          if (escalated) {
+            break;
+          }
+          escalated = true;
+          mode = mode === "wheel" ? "native" : "wheel";
+          travelled = 0;
+          stable = 0;
+          signature = null;
+          await resetScroller(el, mode);
+          continue;
+        }
+      } else {
+        stable = 0;
+      }
+      signature = current;
+
+      advanceScroller(el, step, mode);
+      travelled += step;
+      await settle(CUSTOM_SETTLE_MS);
+      report(scrollRatio(el, travelled));
+
+      iterations++;
+      if (iterations > DEEP_MAX_ITERATIONS || performance.now() > state.deep.deadline) {
+        break;
+      }
+    }
+
+    el.scrollTop = originalTop;
+    if (mode === "wheel") {
+      dispatchWheel(el, -(el.scrollHeight + 2000));
+    }
+  }
+
   async function deepScan(query) {
-    if (state.deep.running || !query) {
+    if (state.deep.running || !query || !state.bar) {
       return;
     }
     let regex;
@@ -792,55 +1097,47 @@
     state.deep.expanded = new WeakSet();
     state.progressEl.classList.add("better-find-progress-active");
 
-    const scroller = findScroller();
-    state.deep.scroller = scroller;
-    const originalTop = scroller.scrollTop;
-    const step = Math.max(200, scroller.clientHeight * 0.85);
-    const start = performance.now();
-    let iterations = 0;
-    let stable = 0;
-    let lastHeight = -1;
+    state.deep.deadline = performance.now() + DEEP_MAX_MS;
 
-    scroller.scrollTo({ top: 0 });
-    await settle(DEEP_SETTLE_MS);
+    const scrollers = findScrollers();
+    const primary = scrollers[0] || docScroller();
+    state.deep.scroller = primary;
 
-    while (!state.deep.cancel) {
-      if (expandCollapsibles()) {
-        await settle(DEEP_SETTLE_MS);
-      }
-      accumulate(regex, scroller);
+    accumulate(regex, primary, scrollRatio(primary, 0), null);
 
-      const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2;
-      if (atBottom) {
-        if (scroller.scrollHeight === lastHeight) {
-          stable++;
-          if (stable >= DEEP_STABLE_LIMIT) {
-            break;
-          }
-        } else {
-          stable = 0;
-        }
-        lastHeight = scroller.scrollHeight;
-      }
-
-      scroller.scrollTo({ top: scroller.scrollTop + step });
-      await settle(DEEP_SETTLE_MS);
-
-      setProgress(((scroller.scrollTop + scroller.clientHeight) / scroller.scrollHeight) * 100);
-
-      iterations++;
-      if (iterations > DEEP_MAX_ITERATIONS || performance.now() - start > DEEP_MAX_MS) {
+    for (let i = 0; i < scrollers.length; i++) {
+      const el = scrollers[i];
+      if (state.deep.cancel || !state.bar || performance.now() > state.deep.deadline) {
         break;
       }
+      if (!el.isConnected) {
+        continue;
+      }
+      const root = el === docScroller() ? null : el;
+      const report = (ratio) => {
+        setProgress(((i + Math.min(1, ratio)) / scrollers.length) * 100);
+      };
+      if (isCustomScroller(el)) {
+        await sweepCustom(el, regex, root, report);
+      } else {
+        await sweepNative(el, regex, root, report);
+      }
     }
 
-    if (expandCollapsibles()) {
-      await settle(DEEP_SETTLE_MS);
+    const abandoned = !state.bar;
+    if (!abandoned) {
+      if (withFocusGuard(expandCollapsibles)) {
+        await settle(DEEP_SETTLE_MS);
+      }
+      accumulate(regex, primary, scrollRatio(primary, 0), null);
     }
-    accumulate(regex, scroller);
-    scroller.scrollTo({ top: originalTop });
 
     state.deep.running = false;
+    if (abandoned) {
+      clearHighlights();
+      return;
+    }
+    state.deepResults = true;
     state.progressEl.classList.remove("better-find-progress-active");
     state.current = state.matches.length ? 0 : -1;
     paintHighlights();
@@ -848,6 +1145,7 @@
       scrollToCurrent(true);
     }
     updateCount();
+    state.input.focus();
   }
 
   function cancelDeep() {
@@ -1055,17 +1353,20 @@ ${s.customCss || ""}`;
   }
 
   function open() {
+    const wasOpen = Boolean(state.bar) && state.bar.style.display !== "none";
     if (!state.bar) {
       buildBar();
     }
     state.bar.style.display = "flex";
-    const selected = window.getSelection().toString().trim();
-    if (selected) {
-      state.input.value = selected;
+    if (!wasOpen) {
+      const selected = window.getSelection().toString().trim();
+      if (selected) {
+        state.input.value = selected;
+      }
     }
     state.input.focus();
     state.input.select();
-    if (state.input.value) {
+    if (!wasOpen && state.input.value) {
       runSearch(state.input.value);
     }
     startObserver();
@@ -1077,6 +1378,7 @@ ${s.customCss || ""}`;
     stopObserver();
     clearHighlights();
     restoreRevealed();
+    state.deepResults = false;
     if (state.bar) {
       state.bar.style.display = "none";
     }
@@ -1100,10 +1402,68 @@ ${s.customCss || ""}`;
     );
   }
 
+  function isActive() {
+    if (!state.loaded) {
+      return false;
+    }
+    return API.isEnabledFor(state.settings, state.overrides, location.href);
+  }
+
+  function teardown() {
+    close();
+    if (state.searchTimer) {
+      clearTimeout(state.searchTimer);
+      state.searchTimer = null;
+    }
+    if (state.styleEl) {
+      state.styleEl.remove();
+      state.styleEl = null;
+    }
+    if (state.bar) {
+      state.bar.remove();
+      state.bar = null;
+      state.input = null;
+      state.countEl = null;
+      state.progressEl = null;
+      state.progressInner = null;
+      state.liveEl = null;
+      state.toggleButtons = {};
+    }
+    if (state.ticksEl) {
+      state.ticksEl.remove();
+      state.ticksEl = null;
+    }
+  }
+
+  function applySettings() {
+    if (!isActive()) {
+      teardown();
+      return;
+    }
+    applyDynamicStyle();
+    applyTheme();
+    applyPosition();
+    stopAnimation();
+    syncAnimation();
+    stopObserver();
+    if (state.bar && state.bar.style.display !== "none") {
+      startObserver();
+    }
+  }
+
+  function onLocationChange() {
+    if (!isActive()) {
+      teardown();
+    }
+  }
+
+  window.addEventListener("hashchange", onLocationChange);
+  window.addEventListener("popstate", onLocationChange);
+
   window.addEventListener(
     "keydown",
     (e) => {
-      if (!matchesHotkey(e)) {
+      if (!matchesHotkey(e) || !isActive()) {
         return;
       }
       const hk = state.settings.hotkey;
@@ -1129,36 +1489,40 @@ ${s.customCss || ""}`;
   });
 
   chrome.runtime.onMessage.addListener((msg) => {
-    if (msg && msg.type === "better-find:open") {
+    if (msg && msg.type === "better-find:open" && isActive()) {
       open();
     }
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "sync" || !changes[API.STORAGE_KEY] || !extensionAlive()) {
+    if (area !== "sync" || !extensionAlive()) {
       return;
     }
-    state.settings = API.mergeSettings(changes[API.STORAGE_KEY].newValue);
-    stopAnimation();
-    applyDynamicStyle();
-    applyTheme();
-    applyPosition();
-    syncAnimation();
-    stopObserver();
-    if (state.bar && state.bar.style.display !== "none") {
-      startObserver();
+    if (!changes[API.STORAGE_KEY] && !changes[API.SITES_KEY]) {
+      return;
     }
+    if (changes[API.STORAGE_KEY]) {
+      state.settings = API.mergeSettings(changes[API.STORAGE_KEY].newValue);
+    }
+    if (changes[API.SITES_KEY]) {
+      state.overrides = API.mergeOverrides(changes[API.SITES_KEY].newValue);
+    }
+    applySettings();
   });
 
   try {
-    chrome.storage.sync.get(API.STORAGE_KEY, (data) => {
+    chrome.storage.sync.get([API.STORAGE_KEY, API.SITES_KEY], (data) => {
       if (chrome.runtime.lastError) {
         return;
       }
       state.settings = API.mergeSettings(data && data[API.STORAGE_KEY]);
-      applyDynamicStyle();
+      state.overrides = API.mergeOverrides(data && data[API.SITES_KEY]);
+      state.loaded = true;
+      if (isActive()) {
+        applyDynamicStyle();
+      }
     });
   } catch (e) {
-    /* extension context unavailable; keep defaults */
+    /* extension context unavailable; stay inert rather than ignore the user's rules */
   }
 })();

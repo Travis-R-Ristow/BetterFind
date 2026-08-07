@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Better Find</title>
+    <link rel="stylesheet" href="switch.css" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="head">
+      <img class="logo" src="icons/icon48.png" alt="" />
+      <div class="head-text">
+        <strong>Better Find</strong>
+        <span class="head-state" id="master-state">On</span>
+      </div>
+      <label class="switch" title="Turn Better Find off everywhere">
+        <input type="checkbox" id="enabled" />
+        <span class="track"></span>
+      </label>
+    </header>
+
+    <section class="site" id="site">
+      <div class="site-row">
+        <div class="site-text">
+          <span class="site-label">This site</span>
+          <span class="site-host" id="site-host">—</span>
+        </div>
+        <label class="switch" id="site-switch-wrap">
+          <input type="checkbox" id="site-enabled" />
+          <span class="track"></span>
+        </label>
+      </div>
+      <p class="site-why" id="site-why"></p>
+      <button class="link" id="site-clear" type="button" hidden>Clear this site's override</button>
+    </section>
+
+    <p class="error" id="error" role="alert" hidden></p>
+
+    <footer class="foot">
+      <button class="link" id="open-options" type="button">Settings &amp; site rules</button>
+    </footer>
+
+    <script src="defaults.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -7,6 +7,7 @@ CSS Custom Highlight API — no DOM mutation, so page layout never breaks.
 ## Features
 
 - Overrides `Cmd+F` / `Ctrl+F` on normal pages (shortcut is configurable)
+- One-click on/off from the toolbar popup, plus always-on / always-off URL lists
 - Full-DOM text search, optionally including hidden elements
 - Match case, whole word, and regex toggles
 - Live `current / total` counter, next/prev navigation, auto-scroll to match
@@ -23,10 +24,68 @@ CSS Custom Highlight API — no DOM mutation, so page layout never breaks.
 
 ## Usage
 
-- `Cmd/Ctrl+F` opens the bar (backup: `Cmd/Ctrl+Shift+F`, or click the toolbar icon)
+- `Cmd/Ctrl+F` opens the bar (backup: `Cmd/Ctrl+Shift+F`)
 - `Enter` / `↓` next, `↑` previous, `Esc` closes (or cancels a running scan)
 - `Shift+Enter` (or the scan button) runs **Deep Scan**
-- Open **Settings** from `chrome://extensions` → Better Find → _Extension options_
+- Click the toolbar icon for the on/off popup; **Settings** from the popup or the bar's gear
+
+## Turning it on and off
+
+The toolbar popup has two switches:
+
+- **Master switch** — a hard off. No shortcut capture, no highlights, no highlight or custom
+  CSS injected, and the lists below are ignored entirely. The find bar tears itself down
+  immediately on every open tab, no reload needed. (The content script itself still loads —
+  Chrome mounts it declaratively — but it goes fully inert, and `content.css` sits unused
+  with nothing to style.)
+- **This site** — an override for the current host. Overrides beat both lists; flipping a
+  site back to what the lists already say clears the override instead of pinning it.
+
+Settings holds the two pattern lists. Precedence, top down:
+
+1. Master switch off → off, no exceptions
+2. Per-site override (set from the popup)
+3. **Always on** — wins over always off
+4. **Always off**
+5. Otherwise on
+
+Two deliberate choices worth knowing:
+
+- **Fails closed.** If the settings read fails, the content script stays inert rather than
+  assuming "on" — an off rule is never ignored because storage hiccuped. The cost is that
+  `Ctrl+F` falls through to Chrome's native find for the moment between page load and the
+  settings arriving.
+- **Re-checked on in-page navigation.** `hashchange` and `popstate` re-evaluate the rules and
+  tear the bar down if you land on an excluded route. Routers that only call `pushState`
+  aren't observable without patching `history`, so those are re-checked on the next
+  `Ctrl+F` instead.
+
+### Pattern syntax
+
+| Pattern                         | Matches                                    |
+| ------------------------------- | ------------------------------------------ |
+| `example.com`                   | the whole site — any scheme, port, or path |
+| `*.example.com`                 | subdomains only (not the apex)             |
+| `example.com/docs/`             | everything under that path                 |
+| `https://example.com/docs/page` | that exact URL                             |
+| `github.com/*/issues`           | `*` is a wildcard anywhere                 |
+| `app.com/#/admin`               | one route of a hash-routed SPA             |
+
+Scheme and port are optional; `*` never crosses a `/` in the host, so `*.example.com`
+can't be tricked by a path like `evil.com/a.example.com/x`.
+
+Fragments are only compared when the pattern has one. So `app.com/#/admin` targets that
+single route, while `example.com/docs/page` still matches `…/docs/page#section`, and a
+plain `example.com` covers every route including hash ones. Matching is case-insensitive.
+
+### Conflict highlighting
+
+The lists cross-check each other as you type:
+
+- **Red** — the same pattern is in both lists. Always-on wins; remove one.
+- **Orange** — the patterns overlap (e.g. a wildcard in one list covering a hardcoded URL in
+  the other). Always-on wins for the shared URLs, so the always-off entry never applies
+  there. Each flagged row names the pattern it collides with.
 
 ## Deep Scan
 
@@ -35,19 +94,33 @@ sections). Instant search can't see what isn't mounted yet. Deep Scan sweeps the
 top-to-bottom to force that content to render, indexing matches live with a progress bar
 (Esc cancels). It:
 
-- Detects the real scroll container (not just the window)
+- Sweeps **every** scroll container on the page, not just the window — nested panes, split
+  views, and widgets that draw their own scrollbars (`overflow: hidden`), which the usual
+  `overflow: auto` check misses entirely
+- Drives each container the way that container actually works: `scrollTop` stepping for normal
+  panes, synthetic `wheel` events for custom scrollers like the Monaco editor (Azure DevOps /
+  GitHub code views), automatically falling back to the other mechanism if the first moves
+  nothing
 - Expands collapsibles: opens `<details>` and clicks disclosure toggles
   (`aria-expanded`, `aria-controls`, `role="button"`) — skips links and form submits
 - Indexes hidden content too — text hidden via `[hidden]`, `aria-hidden`, or any CSS
   (`display:none`, `.hidden`, `.d-none`, etc.) is searched
 - Reveals a hidden match's branch only when you navigate to it, and restores the page
   when you close (non-destructive — no attributes or classes are removed)
-- Stops when the page stops growing, or after a time/iteration cap
-- Restores your scroll position when done
+- Stops a container when it stops growing and its content stops changing, or after a
+  time/iteration cap shared across all containers
+- Restores each container's scroll position when done
 
 Fully handles lazy content that stays mounted. For **virtualized** lists that unmount
-off-screen rows, matches are still counted and navigation re-scrolls to re-render them —
-but such lists can't all be mounted at once by design.
+off-screen rows — Monaco's code view, big data grids — matches are indexed as the sweep
+scrolls past them, and navigation re-scrolls the owning container to re-render the row.
+Each match remembers which container it came from, so navigating to it seeks that pane
+rather than the page.
+
+Two limits worth knowing on virtualized content: a custom scroller's original position
+can't be read back (the widget keeps it internally, not in `scrollTop`), so the sweep leaves
+it at the first match rather than exactly where you were; and two identical lines far apart
+in the same file can dedupe into one match, since the index key is the surrounding text.
 
 ## Notes
 
@@ -58,8 +131,11 @@ but such lists can't all be mounted at once by design.
 ## Files
 
 - `manifest.json` — MV3 config
-- `defaults.js` — shared settings schema + helpers (loaded by content script and options)
+- `defaults.js` — settings schema, URL pattern matching, enable/disable resolution, conflict
+  analysis (shared by content script, popup, and options)
 - `content.js` — search engine, highlighting, and the find bar UI
 - `content.css` — find bar styling
-- `background.js` — routes the command / toolbar click to the page
+- `background.js` — routes the backup command to the page, opens settings
+- `popup.html` / `popup.css` / `popup.js` — toolbar on/off popup
 - `options.html` / `options.css` / `options.js` — settings page
+- `switch.css` — toggle switch shared by the popup and settings page
