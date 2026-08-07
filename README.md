@@ -122,6 +122,34 @@ can't be read back (the widget keeps it internally, not in `scrollTop`), so the 
 it at the first match rather than exactly where you were; and two identical lines far apart
 in the same file can dedupe into one match, since the index key is the surrounding text.
 
+## Azure DevOps code view (Monaco)
+
+ADO renders files in Monaco, which owns its own scroll state and mounts only the visible
+lines — so `scrollTop` is always 0 and off-screen lines don't exist in the DOM. Scrolling it
+from outside can only ever approximate where a match is.
+
+Instead, Better Find asks Monaco directly. A bridge runs in the page's own JS context
+(`chrome.scripting`, `world: "MAIN"`) and calls `model.findMatches()`, which returns every
+match in the file with exact line/column — no scrolling, no sweeping, instant. Navigation
+uses `revealRangeInCenter()`, and matches are highlighted with Monaco decorations, so the
+highlight survives scrolling and virtualization instead of dying with a recycled line.
+
+**This costs other sites nothing.** Three gates:
+
+- The content script checks `document.querySelector(".monaco-editor")` first. No editor, no
+  message, no service-worker wake, no async work — one cheap selector per search.
+- `host_permissions` is scoped to `*.visualstudio.com` and `dev.azure.com`, so the bridge
+  cannot run anywhere else even if something tried.
+- A failed probe is remembered per page, so a site that has Monaco but doesn't expose it
+  round-trips once and never again.
+
+If the bridge can't reach Monaco (the page may not expose it globally), it falls back to the
+generic wheel sweep described above — degraded but functional.
+
+Deep Scan likewise stays cheap elsewhere: beyond the main scroller it only sweeps
+_custom-scrollbar_ containers that are genuinely large (≥300px and ≥25% of the viewport). A
+page without such widgets sweeps exactly one container, as it always did.
+
 ## Notes
 
 - Cannot override find on `chrome://` pages, the built-in PDF viewer, or the Chrome Web

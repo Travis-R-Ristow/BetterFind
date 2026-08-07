@@ -35,6 +35,10 @@
   const MAX_SCROLLERS = 8;
   const SIGNATURE_SAMPLE = 2;
   const RELOCATE_HUNT_STEPS = 4;
+  const MONACO_SELECTOR = ".monaco-editor";
+  const MONACO_MATCH_LIMIT = 5000;
+  const CUSTOM_SWEEP_MIN_HEIGHT = 300;
+  const CUSTOM_SWEEP_VIEWPORT_RATIO = 0.25;
 
   const state = {
     settings: API.DEFAULT_SETTINGS,
@@ -60,8 +64,11 @@
       diacritics: false,
     },
     searchTimer: null,
+    searchToken: 0,
     deepResults: false,
     relocating: false,
+    monacoActive: false,
+    monacoUnavailable: false,
     deep: { running: false, cancel: false, scroller: null, seen: null, deadline: 0 },
     anim: { raf: null },
     observer: null,
@@ -239,8 +246,10 @@
       return;
     }
     state.deepResults = false;
+    state.searchToken++;
     clearHighlights();
     if (!query) {
+      clearMonaco();
       updateCount();
       return;
     }
@@ -272,6 +281,7 @@
       scrollToCurrent();
     }
     updateCount();
+    augmentWithMonaco(query);
   }
 
   function scheduleSearch(query) {
@@ -652,6 +662,10 @@
   }
 
   function scrollToCurrent(interactive) {
+    if (monacoAnchor(state.current)) {
+      revealMonaco(state.current);
+      return;
+    }
     const range = state.matches[state.current];
     if (!range) {
       return;
@@ -661,6 +675,111 @@
       return;
     }
     scrollRangeIntoView(range, interactive);
+  }
+
+  function monacoPresent() {
+    return !state.monacoUnavailable && document.querySelector(MONACO_SELECTOR) !== null;
+  }
+
+  function monacoRequest(payload) {
+    return new Promise((resolve) => {
+      if (!extensionAlive()) {
+        resolve(null);
+        return;
+      }
+      try {
+        chrome.runtime.sendMessage({ type: "better-find:monaco", payload }, (response) => {
+          resolve(chrome.runtime.lastError ? null : response);
+        });
+      } catch (e) {
+        resolve(null);
+      }
+    });
+  }
+
+  function monacoOptions(query) {
+    return {
+      op: "find",
+      query,
+      caseSensitive: state.options.caseSensitive,
+      wholeWord: state.options.wholeWord,
+      regex: state.options.regex,
+      limit: MONACO_MATCH_LIMIT,
+    };
+  }
+
+  function insideMonaco(node, editors) {
+    return editors.some((editor) => editor.contains(node));
+  }
+
+  function mergeMonacoMatches(found) {
+    const editors = Array.from(document.querySelectorAll(MONACO_SELECTOR));
+    const ranges = [];
+    const anchors = [];
+    state.matches.forEach((range, i) => {
+      if (range && range.startContainer && insideMonaco(range.startContainer, editors)) {
+        return;
+      }
+      ranges.push(range);
+      anchors.push(state.anchors[i]);
+    });
+    found.forEach((match) => {
+      ranges.push(null);
+      anchors.push({ monaco: match });
+    });
+    state.matches = ranges;
+    state.anchors = anchors;
+  }
+
+  async function augmentWithMonaco(query) {
+    if (!query || !monacoPresent()) {
+      return;
+    }
+    const token = state.searchToken;
+    const result = await monacoRequest(monacoOptions(query));
+    if (token !== state.searchToken || !state.bar) {
+      return;
+    }
+    if (!result || !result.ok) {
+      state.monacoActive = false;
+      state.monacoUnavailable = true;
+      return;
+    }
+    state.monacoActive = true;
+    if (!result.matches.length) {
+      return;
+    }
+    const wasEmpty = state.current < 0;
+    mergeMonacoMatches(result.matches);
+    if (wasEmpty && state.matches.length) {
+      state.current = 0;
+    }
+    paintHighlights();
+    updateCount();
+    if (wasEmpty && state.current >= 0) {
+      scrollToCurrent(true);
+    }
+  }
+
+  function monacoAnchor(index) {
+    const anchor = state.anchors[index];
+    return anchor && anchor.monaco ? anchor.monaco : null;
+  }
+
+  function revealMonaco(index) {
+    const match = monacoAnchor(index);
+    if (!match) {
+      return;
+    }
+    monacoRequest({ op: "reveal", id: match.id });
+  }
+
+  function clearMonaco() {
+    if (!state.monacoActive) {
+      return;
+    }
+    state.monacoActive = false;
+    monacoRequest({ op: "clear" });
   }
 
   function seekCenter(scroller, isPage) {
@@ -809,6 +928,30 @@
 
   function findScroller() {
     return findScrollers()[0] || docScroller();
+  }
+
+  function worthSweeping(el) {
+    return (
+      el.clientHeight >= CUSTOM_SWEEP_MIN_HEIGHT &&
+      el.clientHeight >= window.innerHeight * CUSTOM_SWEEP_VIEWPORT_RATIO
+    );
+  }
+
+  function sweepTargets(scrollers, primary) {
+    const editors = state.monacoActive
+      ? Array.from(document.querySelectorAll(MONACO_SELECTOR))
+      : [];
+    const targets = [primary];
+    scrollers.forEach((el) => {
+      if (el === primary || !isCustomScroller(el) || !worthSweeping(el)) {
+        return;
+      }
+      if (editors.some((editor) => editor.contains(el))) {
+        return;
+      }
+      targets.push(el);
+    });
+    return targets;
   }
 
   function dispatchWheel(el, deltaY) {
@@ -1099,14 +1242,16 @@
 
     state.deep.deadline = performance.now() + DEEP_MAX_MS;
 
+    state.searchToken++;
     const scrollers = findScrollers();
     const primary = scrollers[0] || docScroller();
+    const targets = sweepTargets(scrollers, primary);
     state.deep.scroller = primary;
 
     accumulate(regex, primary, scrollRatio(primary, 0), null);
 
-    for (let i = 0; i < scrollers.length; i++) {
-      const el = scrollers[i];
+    for (let i = 0; i < targets.length; i++) {
+      const el = targets[i];
       if (state.deep.cancel || !state.bar || performance.now() > state.deep.deadline) {
         break;
       }
@@ -1115,7 +1260,7 @@
       }
       const root = el === docScroller() ? null : el;
       const report = (ratio) => {
-        setProgress(((i + Math.min(1, ratio)) / scrollers.length) * 100);
+        setProgress(((i + Math.min(1, ratio)) / targets.length) * 100);
       };
       if (isCustomScroller(el)) {
         await sweepCustom(el, regex, root, report);
@@ -1146,6 +1291,7 @@
     }
     updateCount();
     state.input.focus();
+    augmentWithMonaco(query);
   }
 
   function cancelDeep() {
@@ -1378,6 +1524,7 @@ ${s.customCss || ""}`;
     stopObserver();
     clearHighlights();
     restoreRevealed();
+    clearMonaco();
     state.deepResults = false;
     if (state.bar) {
       state.bar.style.display = "none";
@@ -1452,6 +1599,7 @@ ${s.customCss || ""}`;
   }
 
   function onLocationChange() {
+    state.monacoUnavailable = false;
     if (!isActive()) {
       teardown();
     }

@@ -235,3 +235,15 @@
   opacity: 1;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6);
 }
+
+.better-find-monaco-all {
+  background-color: var(--bf-all-bg, #fce38a) !important;
+  color: var(--bf-all-text, #1a1a1a) !important;
+  border-radius: 2px;
+}
+
+.better-find-monaco-current {
+  background-color: var(--bf-current-bg, #ff9632) !important;
+  color: var(--bf-current-text, #1a1a1a) !important;
+  border-radius: 2px;
+}
