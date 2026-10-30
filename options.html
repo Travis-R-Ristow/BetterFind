@@ -94,6 +94,31 @@
       </section>
 
       <section class="card">
+        <h2>Deep scan</h2>
+        <p class="hint">
+          Controls what Shift+Enter does in the find bar.
+        </p>
+        <label class="check"><input type="checkbox" id="defaultExpandCollapsibles" /> Expand collapsibles — open collapsed sections and toggles</label>
+        <label class="check"><input type="checkbox" id="defaultSweepScrollers" /> Sweep scrollers — scroll through containers to find virtualized content</label>
+        <label class="check"><input type="checkbox" id="defaultScanHidden" /> Include hidden content</label>
+      </section>
+
+      <section class="card">
+        <h2>Scan profiles</h2>
+        <p class="hint">
+          Extra scan configs with their own hotkeys — for when you need different scan behavior
+          per workflow. Changes save automatically.
+        </p>
+        <div id="list-profiles"></div>
+        <p class="profile-empty" id="empty-profiles">
+          No profiles yet. The default deep scan (Shift+Enter in the find bar) is always available.
+        </p>
+        <div class="profile-actions">
+          <button class="ghost small" type="button" id="add-profile">+ Add profile</button>
+        </div>
+      </section>
+
+      <section class="card">
         <h2>Highlight colors</h2>
         <div class="row">
           <label>All matches</label>

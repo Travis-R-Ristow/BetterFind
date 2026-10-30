@@ -1097,7 +1097,8 @@
   }
 
   function accumulate(regex, scroller, ratio, root) {
-    for (const node of collectTextNodes(true, root)) {
+    const includeHidden = state.deep.config ? state.deep.config.includeHidden : true;
+    for (const node of collectTextNodes(includeHidden, root)) {
       const text = node.nodeValue;
       forEachMatch(node, regex, (index, length) => {
         const matchText = text.slice(index, index + length);
@@ -1136,7 +1137,7 @@
     await settle(DEEP_SETTLE_MS);
 
     while (!state.deep.cancel) {
-      if (withFocusGuard(expandCollapsibles)) {
+      if (state.deep.config.expandCollapsibles && withFocusGuard(expandCollapsibles)) {
         await settle(DEEP_SETTLE_MS);
       }
       accumulate(regex, el, scrollRatio(el, 0), root);
@@ -1219,7 +1220,7 @@
     }
   }
 
-  async function deepScan(query) {
+  async function deepScan(query, profile) {
     if (state.deep.running || !query || !state.bar) {
       return;
     }
@@ -1238,6 +1239,11 @@
     state.deep.cancel = false;
     state.deep.seen = new Set();
     state.deep.expanded = new WeakSet();
+    state.deep.config = {
+      expandCollapsibles: profile ? profile.expandCollapsibles : state.settings.defaultExpandCollapsibles,
+      sweepScrollers: profile ? profile.sweepScrollers : state.settings.defaultSweepScrollers,
+      includeHidden: profile ? profile.includeHidden : state.settings.defaultScanHidden,
+    };
     state.progressEl.classList.add("better-find-progress-active");
 
     state.deep.deadline = performance.now() + DEEP_MAX_MS;
@@ -1245,33 +1251,35 @@
     state.searchToken++;
     const scrollers = findScrollers();
     const primary = scrollers[0] || docScroller();
-    const targets = sweepTargets(scrollers, primary);
     state.deep.scroller = primary;
 
     accumulate(regex, primary, scrollRatio(primary, 0), null);
 
-    for (let i = 0; i < targets.length; i++) {
-      const el = targets[i];
-      if (state.deep.cancel || !state.bar || performance.now() > state.deep.deadline) {
-        break;
-      }
-      if (!el.isConnected) {
-        continue;
-      }
-      const root = el === docScroller() ? null : el;
-      const report = (ratio) => {
-        setProgress(((i + Math.min(1, ratio)) / targets.length) * 100);
-      };
-      if (isCustomScroller(el)) {
-        await sweepCustom(el, regex, root, report);
-      } else {
-        await sweepNative(el, regex, root, report);
+    if (state.deep.config.sweepScrollers) {
+      const targets = sweepTargets(scrollers, primary);
+      for (let i = 0; i < targets.length; i++) {
+        const el = targets[i];
+        if (state.deep.cancel || !state.bar || performance.now() > state.deep.deadline) {
+          break;
+        }
+        if (!el.isConnected) {
+          continue;
+        }
+        const root = el === docScroller() ? null : el;
+        const report = (ratio) => {
+          setProgress(((i + Math.min(1, ratio)) / targets.length) * 100);
+        };
+        if (isCustomScroller(el)) {
+          await sweepCustom(el, regex, root, report);
+        } else {
+          await sweepNative(el, regex, root, report);
+        }
       }
     }
 
     const abandoned = !state.bar;
     if (!abandoned) {
-      if (withFocusGuard(expandCollapsibles)) {
+      if (state.deep.config.expandCollapsibles && withFocusGuard(expandCollapsibles)) {
         await settle(DEEP_SETTLE_MS);
       }
       accumulate(regex, primary, scrollRatio(primary, 0), null);
@@ -1535,8 +1543,7 @@ ${s.customCss || ""}`;
     }
   }
 
-  function matchesHotkey(e) {
-    const hk = state.settings.hotkey;
+  function matchesKeyCombo(e, hk) {
     if (!hk || !hk.key || !e.key) {
       return false;
     }
@@ -1547,6 +1554,31 @@ ${s.customCss || ""}`;
       e.altKey === hk.altKey &&
       e.shiftKey === hk.shiftKey
     );
+  }
+
+  function matchesHotkey(e) {
+    return matchesKeyCombo(e, state.settings.hotkey);
+  }
+
+  function matchingProfile(e) {
+    const profiles = state.settings.scanProfiles || [];
+    for (const profile of profiles) {
+      if (profile.hotkey && matchesKeyCombo(e, profile.hotkey)) {
+        return profile;
+      }
+    }
+    return null;
+  }
+
+  function applyProfileOptions(profile) {
+    state.options.caseSensitive = profile.caseSensitive;
+    state.options.wholeWord = profile.wholeWord;
+    state.options.regex = profile.regex;
+    state.options.hidden = profile.includeHidden;
+    state.options.diacritics = profile.diacritics;
+    Object.keys(state.toggleButtons).forEach((key) => {
+      state.toggleButtons[key].classList.toggle("better-find-active", state.options[key]);
+    });
   }
 
   function isActive() {
@@ -1611,16 +1643,35 @@ ${s.customCss || ""}`;
   window.addEventListener(
     "keydown",
     (e) => {
-      if (!matchesHotkey(e) || !isActive()) {
+      if (!isActive()) {
         return;
       }
-      const hk = state.settings.hotkey;
-      if (!hk.ctrlKey && !hk.metaKey && isEditable(document.activeElement)) {
+
+      if (matchesHotkey(e)) {
+        const hk = state.settings.hotkey;
+        if (!hk.ctrlKey && !hk.metaKey && isEditable(document.activeElement)) {
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        open();
         return;
       }
-      e.preventDefault();
-      e.stopPropagation();
-      open();
+
+      const profile = matchingProfile(e);
+      if (profile) {
+        if (!profile.hotkey.ctrlKey && !profile.hotkey.metaKey && isEditable(document.activeElement)) {
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        open();
+        applyProfileOptions(profile);
+        if (state.input.value) {
+          deepScan(state.input.value, profile);
+        }
+        return;
+      }
     },
     true
   );

@@ -16,6 +16,9 @@ const fields = {
   defaultHidden: document.getElementById("defaultHidden"),
   defaultIgnoreDiacritics: document.getElementById("defaultIgnoreDiacritics"),
   liveUpdate: document.getElementById("liveUpdate"),
+  defaultExpandCollapsibles: document.getElementById("defaultExpandCollapsibles"),
+  defaultSweepScrollers: document.getElementById("defaultSweepScrollers"),
+  defaultScanHidden: document.getElementById("defaultScanHidden"),
   customCss: document.getElementById("customCss"),
   animation: document.getElementById("animation"),
   animationTarget: document.getElementById("animationTarget"),
@@ -49,6 +52,7 @@ function render() {
   renderMaster();
   renderRules();
   renderOverrides();
+  renderProfiles();
   fields.colorAllBg.value = settings.colorAllBg;
   fields.colorAllText.value = settings.colorAllText;
   fields.colorCurrentBg.value = settings.colorCurrentBg;
@@ -61,6 +65,9 @@ function render() {
   fields.defaultHidden.checked = settings.defaultHidden;
   fields.defaultIgnoreDiacritics.checked = settings.defaultIgnoreDiacritics;
   fields.liveUpdate.checked = settings.liveUpdate;
+  fields.defaultExpandCollapsibles.checked = settings.defaultExpandCollapsibles;
+  fields.defaultSweepScrollers.checked = settings.defaultSweepScrollers;
+  fields.defaultScanHidden.checked = settings.defaultScanHidden;
   fields.customCss.value = settings.customCss;
   fields.animation.value = settings.animation;
   fields.animationTarget.value = settings.animationTarget;
@@ -260,6 +267,194 @@ function renderOverrides() {
   });
 }
 
+function buildProfileCheck(label, checked, onChange) {
+  const wrapper = document.createElement("label");
+  wrapper.className = "check";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = checked;
+  input.addEventListener("change", () => onChange(input.checked));
+  wrapper.append(input, document.createTextNode(` ${label}`));
+  return wrapper;
+}
+
+function buildProfileCard(index) {
+  const profile = settings.scanProfiles[index];
+  const card = document.createElement("div");
+  card.className = "profile-card";
+
+  const header = document.createElement("div");
+  header.className = "profile-header";
+
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.className = "profile-name";
+  nameInput.value = profile.name;
+  nameInput.placeholder = "Profile name";
+  nameInput.spellcheck = false;
+  nameInput.autocomplete = "off";
+  nameInput.addEventListener("input", () => {
+    profile.name = nameInput.value;
+    saveSoon();
+  });
+
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "rule-remove";
+  removeBtn.textContent = "×";
+  removeBtn.title = "Remove profile";
+  removeBtn.setAttribute("aria-label", "Remove profile");
+  removeBtn.addEventListener("click", () => {
+    settings.scanProfiles.splice(index, 1);
+    renderProfiles();
+    save();
+  });
+
+  header.append(nameInput, removeBtn);
+
+  const hotkeyRow = document.createElement("div");
+  hotkeyRow.className = "profile-row";
+
+  const hotkeyLabel = document.createElement("label");
+  hotkeyLabel.textContent = "Hotkey";
+
+  const hotkeyWrap = document.createElement("div");
+  hotkeyWrap.className = "hotkey-wrap";
+
+  const profileHotkeyBtn = document.createElement("button");
+  profileHotkeyBtn.type = "button";
+  profileHotkeyBtn.className = "hotkey";
+  profileHotkeyBtn.textContent = profile.hotkey ? API.formatHotkey(profile.hotkey) : "Click to set";
+
+  const profileHotkeyClear = document.createElement("button");
+  profileHotkeyClear.type = "button";
+  profileHotkeyClear.className = "ghost small";
+  profileHotkeyClear.textContent = "Clear";
+  profileHotkeyClear.addEventListener("click", () => {
+    profile.hotkey = null;
+    profileHotkeyBtn.textContent = "Click to set";
+    save();
+  });
+
+  let isRecording = false;
+
+  function stopProfileRecording() {
+    isRecording = false;
+    profileHotkeyBtn.classList.remove("recording");
+    profileHotkeyBtn.textContent = profile.hotkey ? API.formatHotkey(profile.hotkey) : "Click to set";
+  }
+
+  profileHotkeyBtn.addEventListener("click", () => {
+    if (recording) {
+      stopRecording();
+    }
+    isRecording = true;
+    profileHotkeyBtn.classList.add("recording");
+    profileHotkeyBtn.textContent = "Press a shortcut…";
+  });
+
+  profileHotkeyBtn.addEventListener("keydown", (e) => {
+    if (!isRecording) {
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Escape") {
+      stopProfileRecording();
+      return;
+    }
+    const modifierKeys = ["Control", "Meta", "Alt", "Shift"];
+    if (modifierKeys.includes(e.key)) {
+      return;
+    }
+    profile.hotkey = {
+      ctrlKey: e.ctrlKey,
+      metaKey: e.metaKey,
+      altKey: e.altKey,
+      shiftKey: e.shiftKey,
+      key: e.key.length === 1 ? e.key.toLowerCase() : e.key,
+    };
+    stopProfileRecording();
+    save();
+  });
+
+  profileHotkeyBtn.addEventListener("blur", () => {
+    if (isRecording) {
+      stopProfileRecording();
+    }
+  });
+
+  hotkeyWrap.append(profileHotkeyBtn, profileHotkeyClear);
+  hotkeyRow.append(hotkeyLabel, hotkeyWrap);
+
+  const scanSection = document.createElement("div");
+  scanSection.className = "profile-section";
+  const scanTitle = document.createElement("h4");
+  scanTitle.textContent = "Scan behavior";
+  scanSection.appendChild(scanTitle);
+  scanSection.appendChild(buildProfileCheck("Expand collapsibles", profile.expandCollapsibles, (v) => {
+    profile.expandCollapsibles = v;
+    save();
+  }));
+  scanSection.appendChild(buildProfileCheck("Sweep scrollers", profile.sweepScrollers, (v) => {
+    profile.sweepScrollers = v;
+    save();
+  }));
+
+  const searchSection = document.createElement("div");
+  searchSection.className = "profile-section";
+  const searchTitle = document.createElement("h4");
+  searchTitle.textContent = "Search options";
+  searchSection.appendChild(searchTitle);
+  searchSection.appendChild(buildProfileCheck("Match case", profile.caseSensitive, (v) => {
+    profile.caseSensitive = v;
+    save();
+  }));
+  searchSection.appendChild(buildProfileCheck("Whole word", profile.wholeWord, (v) => {
+    profile.wholeWord = v;
+    save();
+  }));
+  searchSection.appendChild(buildProfileCheck("Regular expression", profile.regex, (v) => {
+    profile.regex = v;
+    save();
+  }));
+  searchSection.appendChild(buildProfileCheck("Include hidden", profile.includeHidden, (v) => {
+    profile.includeHidden = v;
+    save();
+  }));
+  searchSection.appendChild(buildProfileCheck("Ignore accents", profile.diacritics, (v) => {
+    profile.diacritics = v;
+    save();
+  }));
+
+  card.append(header, hotkeyRow, scanSection, searchSection);
+  return card;
+}
+
+function renderProfiles() {
+  const list = document.getElementById("list-profiles");
+  list.textContent = "";
+  settings.scanProfiles.forEach((_, index) => {
+    list.appendChild(buildProfileCard(index));
+  });
+  document.getElementById("empty-profiles").hidden = settings.scanProfiles.length > 0;
+}
+
+function addProfile() {
+  const name = `Profile ${settings.scanProfiles.length + 1}`;
+  settings.scanProfiles.push(Object.assign({}, API.DEFAULT_PROFILE, { name }));
+  renderProfiles();
+  save();
+  const nameInputs = document.querySelectorAll("#list-profiles .profile-name");
+  const last = nameInputs[nameInputs.length - 1];
+  if (last) {
+    last.focus();
+    last.select();
+  }
+}
+
+document.getElementById("add-profile").addEventListener("click", addProfile);
+
 enabledEl.addEventListener("change", () => {
   settings.enabled = enabledEl.checked;
   renderMaster();
@@ -297,6 +492,9 @@ bindField("defaultRegex", fields.defaultRegex, "checked");
 bindField("defaultHidden", fields.defaultHidden, "checked");
 bindField("defaultIgnoreDiacritics", fields.defaultIgnoreDiacritics, "checked");
 bindField("liveUpdate", fields.liveUpdate, "checked");
+bindField("defaultExpandCollapsibles", fields.defaultExpandCollapsibles, "checked");
+bindField("defaultSweepScrollers", fields.defaultSweepScrollers, "checked");
+bindField("defaultScanHidden", fields.defaultScanHidden, "checked");
 bindField("customCss", fields.customCss, "value");
 bindField("animation", fields.animation, "value");
 bindField("animationTarget", fields.animationTarget, "value");

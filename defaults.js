@@ -24,11 +24,27 @@
     defaultHidden: false,
     defaultIgnoreDiacritics: false,
     liveUpdate: false,
+    defaultExpandCollapsibles: true,
+    defaultSweepScrollers: true,
+    defaultScanHidden: true,
     customCss: "",
     animation: "none",
     animationTarget: "current",
     animationSpeed: 1.2,
     animationIntensity: 60,
+    scanProfiles: [],
+  };
+
+  const DEFAULT_PROFILE = {
+    name: "",
+    hotkey: null,
+    expandCollapsibles: true,
+    sweepScrollers: true,
+    includeHidden: false,
+    caseSensitive: false,
+    wholeWord: false,
+    regex: false,
+    diacritics: false,
   };
 
   const UNSUPPORTED_SCHEMES = ["chrome:", "chrome-extension:", "edge:", "about:", "devtools:", "view-source:"];
@@ -292,6 +308,7 @@
     STORAGE_KEY: "betterFindSettings",
     SITES_KEY: "betterFindSites",
     DEFAULT_SETTINGS,
+    DEFAULT_PROFILE,
     isMac,
     formatHotkey,
     normalizePattern,
@@ -312,6 +329,15 @@
       merged.hotkey = Object.assign({}, DEFAULT_SETTINGS.hotkey, (stored && stored.hotkey) || {});
       merged.alwaysOn = Array.isArray(merged.alwaysOn) ? merged.alwaysOn.slice() : [];
       merged.alwaysOff = Array.isArray(merged.alwaysOff) ? merged.alwaysOff.slice() : [];
+      merged.scanProfiles = Array.isArray(merged.scanProfiles)
+        ? merged.scanProfiles.map((p) => {
+            const profile = Object.assign({}, DEFAULT_PROFILE, p);
+            if (p && p.hotkey) {
+              profile.hotkey = Object.assign({}, p.hotkey);
+            }
+            return profile;
+          })
+        : [];
       return merged;
     },
     mergeOverrides(stored) {
