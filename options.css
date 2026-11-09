@@ -47,6 +47,10 @@ body {
   margin-bottom: 24px;
 }
 
+.header-feedback {
+  margin-left: auto;
+}
+
 .logo {
   width: 44px;
   height: 44px;

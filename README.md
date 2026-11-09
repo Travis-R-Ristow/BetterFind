@@ -167,3 +167,4 @@ page without such widgets sweeps exactly one container, as it always did.
 - `popup.html` / `popup.css` / `popup.js` — toolbar on/off popup
 - `options.html` / `options.css` / `options.js` — settings page
 - `switch.css` — toggle switch shared by the popup and settings page
+- `vendor/lt3.js` — LT3 feedback widget, loaded by the settings page
